@@ -9,16 +9,25 @@
 #include <time.h>
 
 #define MAX_LEN 513
-#define _ADDRESS 0
-#define _PORT 1
-#define _NICK 2
-#define _USERNAME 3
-#define _REAL_NAME 4
-#define _CHANNELS 5
-#define PARAMS_COUNT 6
 
-char **phrases;
-int line_count;
+#define CONF_COUNT 6
+#define CONF_ADDR 0
+#define CONF_PORT 1
+#define CONF_NICK 2
+#define CONF_USRNM 3
+#define CONF_RLNM 4
+#define CONF_CHNS 5
+
+#define COMPS_COUNT 6
+#define COMPS_PREF
+#define COMPS_CMD
+#define COMPS_PARS
+#define COMPS_NICK
+#define COMPS_MID
+#define COMPS_TRAIL
+
+static char **phrases;
+static int line_count;
 
 static inline void get_phrases(void)
 {
@@ -60,18 +69,20 @@ static inline void get_phrases(void)
 	fclose(phrases_file);
 }
 
-static inline void time_machine(char *middle, char out_msg[MAX_LEN])
+static inline void time_machine(char out_trailing[MAX_LEN])
 {
 	int r_num = random() % line_count;
 
-	sprintf(out_msg, "%s :%s", middle, phrases[r_num]);
+	strcpy(out_trailing, phrases[r_num]);
 }
 
 static inline void write_to_log(char *log_str, char *log_name)
 {
+	/* Things to check the time */
 	char timestamp[MAX_LEN];
 	time_t timer = time(NULL);
 	struct tm *cur_time = localtime(&timer);
+	/* Where to log */
 	char log_filename[MAX_LEN];
 	FILE *log_file;
 
@@ -79,19 +90,15 @@ static inline void write_to_log(char *log_str, char *log_name)
 	strcat(log_filename, ".log");
 	log_file = fopen(log_filename, "a");
 
-	/* This check is redundant */
-	if (log_file == NULL) {
-		fprintf(stderr, "Failed to log. No .log file initialized.");
-		exit(EXIT_FAILURE);
-	}
-
     strftime(timestamp, MAX_LEN, "%d-%m-%Y %I:%M:%S %p", cur_time);
     fprintf(log_file, "[%s] %s\n", timestamp, log_str);
+	/* May be removed if log to console isn't needed */
 	printf("%s\n", log_str);
+
 	fclose(log_file);
 }
 
-static inline void get_config(char config[PARAMS_COUNT][MAX_LEN])
+static inline void get_config(char config[CONF_COUNT][MAX_LEN])
 {
 	char cur_string[MAX_LEN];
 	char value[MAX_LEN];
@@ -118,50 +125,60 @@ static inline void get_config(char config[PARAMS_COUNT][MAX_LEN])
 	fclose(config_file);
 }
 
-static inline void read_in_msg(int sockfd, char *in_msg)
+static inline void get_msg(int sockfd, char in_msg[COMPS_COUNT][MAX_LEN])
 {
+	char recvd_msg[MAX_LEN];
+	char recvd_char;
 	int status, i = 0;
-	char cur_char;
 
 	while (i < MAX_LEN) {
-		status = recv(sockfd, &cur_char, 1, 0);
-
-		if (status <= 0) {
-			perror("Connection closed. read_in_msg():recv()");
+		if (0 >= (status = recv(sockfd, &recvd_char, 1, 0))) {
+			perror("Connection closed. get_msg():recv()");
 			exit(EXIT_FAILURE);
 		}
 
-		if (cur_char == '\n') {
-			in_msg[i - 1] = '\0';
+		if (recvd_char == '\n') {
+			recvd_msg[i - 1] = '\0';
+			parse_msg(recvd_msg, in_msg);
 			return;
 		}
 
-		in_msg[i] = cur_char;
+		recvd_msg[i] = recvd_char;
 		++i;
 	}
 
-	fprintf(stderr, "in_msg too long. exit() from read_in_msg\n");
+	fprintf(stderr, "recvd_msg too long. exit() from get_msg\n");
 	exit(EXIT_FAILURE);
 }
 
-static inline void parse_in_msg(char *in_msg, char *prefix, char *command,
-								char *params)
+static inline void parse_msg(char *recvd_msg, char in_msg[COMPS_COUNT][MAX_LEN])
 {
-	prefix[0] = '\0';
-	command[0] = '\0';
-	params[0] = '\0';
-	char *token = strtok(in_msg, " ");
+	char *token = strtok(recvd_msg, " ");
 
 	if (token[0] == ':') {
-		strcpy(prefix, token + 1);
+		strcpy(in_msg[COMPS_PREF], token + 1);
 		token = strtok(NULL, " ");
 	}
 
-	strcpy(command, token);
+	strcpy(in_msg[COMPS_CMD], token);
 
 	token = strtok(NULL, "");
 	if (token != NULL)
-		strcpy(params, token);
+		strcpy(in_msg[COMPS_PARS], token);
+
+	nickname = (NULL == strchr(in_msg[COMPS_PREF], '!'))? ""
+			   : (strtok(in_msg[COMPS_PREF], "!"));
+	if (NULL == (trailing = strchr(params, ':'))) {
+		trailing = "";
+		middle = params;
+	} else if (trailing == params) {
+		++trailing;
+		middle = "";
+	} else {
+		*(trailing - 1) = '\0';
+		++trailing;
+		middle = params;
+	}
 }
 
 static inline void send_out_msg(int sockfd, char *prefix, char *command,
@@ -179,59 +196,52 @@ static inline void send_out_msg(int sockfd, char *prefix, char *command,
 	}
 }
 
-/* Introduce our bot to the server and connect to channels */
-static inline void irc_connect(int sockfd, char config[PARAMS_COUNT][MAX_LEN])
+/* Introduce our bot to the server and connect to channel(s) */
+static inline void irc_connect(int sockfd, char config[CONF_COUNT][MAX_LEN])
 {
 	char log_str[MAX_LEN], user_params[MAX_LEN];
 
-	send_out_msg(sockfd, "", "NICK", config[_NICK]);
-	sprintf(log_str, "Set nickname \"%s\"", config[_NICK]);
+	send_out_msg(sockfd, "", "NICK", config[CONF_NICK]);
+	sprintf(log_str, "Set nickname \"%s\"", config[CONF_NICK]);
 	write_to_log(log_str, "bot");
 
-	sprintf(user_params, "%s 0 * :%s", config[_USERNAME], config[_REAL_NAME]);
+	sprintf(user_params, "%s 0 * :%s", config[CONF_USRNM], config[CONF_RLNM]);
 	send_out_msg(sockfd, "", "USER", user_params);
 	sprintf(log_str, "Set username \"%s\" and real name \"%s\"",
-			config[_USERNAME], config[_REAL_NAME]);
+			config[CONF_USRNM], config[CONF_RLNM]);
 	write_to_log(log_str, "bot");
 
-	send_out_msg(sockfd, "", "JOIN", config[_CHANNELS]);
-	sprintf(log_str, "Join to channel(s) \"%s\"", config[_CHANNELS]);
+	send_out_msg(sockfd, "", "JOIN", config[CONF_CHNS]);
+	sprintf(log_str, "Join to channel(s) \"%s\"", config[CONF_CHNS]);
 	write_to_log(log_str, "bot");
 }
 
 int main(int argc, char *argv[])
 {
-	/* hints is a template for sorting out connections */
+	/* To connect to server */
 	struct addrinfo hints;
-	/* results contain all addresses available for connection,
-	   given irc_serv_addr and port */
 	struct addrinfo *results;
-	/* Just iterator for results */
-	struct addrinfo *cur_addr;
-	/* Our config from file config.txt */
-	char config[PARAMS_COUNT][MAX_LEN];
-	char user_params[MAX_LEN];
-	/* Socket for connection to server */
+	struct addrinfo *res_i;
 	int sockfd;
-	/* Stores a message from IRC server */
-	char in_msg[MAX_LEN];
-	/* Stores parsed components of in_msg */
-	char prefix[MAX_LEN], command[MAX_LEN], params[MAX_LEN];
-	char *nickname, *middle, *trailing;
-	char log_str[MAX_LEN];
-	char out_msg[MAX_LEN];
 	int status;
+	/* Congig */
+	char config[CONF_COUNT][MAX_LEN];
+	/* Recieved message */
+	char in_msg[COMPS_COUNT][MAX_LEN];
+	/* Bot's functionality */
+	char out_msg[COMPS_COUNT][MAX_LEN];
+	char log_str[MAX_LEN];
 
-	get_config(config);
-
+	/* hints is a template for sorting out connections */
 	memset(&hints, 0, sizeof(struct addrinfo));
 	hints.ai_family = AF_INET; 	/* Allow IPv4 only */
 	hints.ai_socktype = SOCK_STREAM; 	/* TCP connection */
 	hints.ai_flags = 0;
 	hints.ai_protocol = 0; 	/* Any protocol */
 
-	/* Get list of adresses corresponding our hints template */
-	if (0 != (status = getaddrinfo(config[_ADDRESS], config[_PORT],
+	get_config(config);
+	/* Get list of adresses corresponding to our hints template */
+	if (0 != (status = getaddrinfo(config[CONF_ADDR], config[CONF_PORT],
 								   &hints, &results))
 	) {
 		fprintf(stderr,
@@ -241,50 +251,38 @@ int main(int argc, char *argv[])
 	}
 
 	/* Try each address in results for connection. */
-	for (cur_addr = results;
-		 cur_addr != NULL;
-		 cur_addr = cur_addr->ai_next
+	for (res_i = results;
+		 res_i != NULL;
+		 res_i = res_i->ai_next
 	) {
-		sockfd = socket(cur_addr->ai_family,
-						cur_addr->ai_socktype,
-						cur_addr->ai_protocol);
+		sockfd = socket(res_i->ai_family,
+						res_i->ai_socktype,
+						res_i->ai_protocol);
 		if (sockfd == -1)
 			continue;
 
-		if (-1 != connect(sockfd, cur_addr->ai_addr, cur_addr->ai_addrlen))
+		if (-1 != connect(sockfd, res_i->ai_addr, res_i->ai_addrlen))
 			break; 	/* Successfull connection */
 
 		close(sockfd);
 	}
 	freeaddrinfo(results);
-
-	if (cur_addr == NULL) { 	/* Failed to connect */
+	/* Check if connected */
+	if (res_i == NULL) {
 		perror("Could not connect. main():connect()");
 		exit(EXIT_FAILURE);
 	}
 
-	sprintf(log_str, "Connected to %s:%s", config[_ADDRESS], config[_PORT]);
+	sprintf(log_str, "Connected to %s:%s", config[CONF_ADDR], config[CONF_PORT]);
 	write_to_log(log_str, "bot");
 
 	irc_connect(sockfd, config);
 	get_phrases();
 
 	while (1){
-		read_in_msg(sockfd, in_msg);
-		parse_in_msg(in_msg, prefix, command, params);
-		nickname = (NULL == strchr(prefix, '!'))? ""
-				   : (strtok(prefix, "!"));
-		if (NULL == (trailing = strchr(params, ':'))) {
-			trailing = "";
-			middle = params;
-		} else if (trailing == params) {
-			++trailing;
-			middle = "";
-		} else {
-			*(trailing - 1) = '\0';
-			++trailing;
-			middle = params;
-		}
+		memset(in_msg, 0, sizeof(in_msg));
+		memset(out_msg, 0, sizeof(out_msg));
+		get_msg(sockfd, in_msg);
 
 		if (!strcmp(command, "PING")) {
 			send_out_msg(sockfd, "", "PONG", trailing);
@@ -293,9 +291,14 @@ int main(int argc, char *argv[])
 		} else if (!strcmp(command, "PRIVMSG")) {
 			sprintf(log_str, "%s: %s", nickname, trailing);
 			write_to_log(log_str, middle);
-			if (NULL != strstr(trailing, config[_NICK])) {
-				time_machine(middle, out_msg);
-				send_out_msg(sockfd, "", "PRIVMSG", out_msg);
+
+			if (NULL != strstr(trailing, config[CONF_NICK])) {
+				time_machine(out_trailing);
+				sprintf(out_params, "%s :%s", middle, out_trailing);
+				send_out_msg(sockfd, "", "PRIVMSG", out_params);
+
+				sprintf(log_str, "%s: %s", config[CONF_NICK], out_trailing);
+				write_to_log(log_str, middle);
 			}
 		} else if (!strcmp(command, "JOIN")) {
 			sprintf(log_str, "%s joined channel", nickname);
