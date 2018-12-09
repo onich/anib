@@ -1,6 +1,6 @@
 irc_serv_addr = chat.freenode.net
 port = 6667
-nick = legit_hooman
+nick = time_machine
 username = not_a_bot
 real_name = Dick Johnson
-channels = ##pihui
+channels =
