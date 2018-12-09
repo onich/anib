@@ -11,15 +11,6 @@
 #define MAX_LEN 513
 #define CONF_COUNT 6
 
-static struct irc_conf {
-	char address[MAX_LEN];
-	char port[MAX_LEN];
-	char nickname[MAX_LEN];
-	char username[MAX_LEN];
-	char realname[MAX_LEN];
-	char channels[MAX_LEN];
-} config;
-
 struct irc_msg {
 	char prefix[MAX_LEN];
 	char command[MAX_LEN];
@@ -28,6 +19,15 @@ struct irc_msg {
 	char middle[MAX_LEN];
 	char trailing[MAX_LEN];
 };
+
+static struct irc_conf {
+	char address[MAX_LEN];
+	char port[MAX_LEN];
+	char nickname[MAX_LEN];
+	char username[MAX_LEN];
+	char realname[MAX_LEN];
+	char channels[MAX_LEN];
+} config;
 
 static int sockfd;
 static char **phrases;
@@ -74,10 +74,19 @@ static void some_magic(struct irc_msg *in_msg)
 	int r_num = random() % ln_count;
 	char msg[MAX_LEN], log_str[MAX_LEN];
 
-	sprintf(msg, "PRIVMSG %s :%s", in_msg->middle, phrases[r_num]);
-	send_msg(msg);
+	if (NULL != strstr(in_msg->trailing, "do some magic")) {
+		sprintf(msg, "PRIVMSG %s :%s", in_msg->middle, phrases[r_num]);
+		send_msg(msg);
+		sprintf(log_str, "%s: %s", config.nickname, phrases[r_num]);
+	}
+	else {
+		sprintf(msg, "PRIVMSG %s :I cannot understand."
+				"I only \"do some magic\".", in_msg->middle);
+		send_msg(msg);
+		sprintf(log_str, "%s: I cannot understand."
+				"I only \"do some magic\".", config.nickname);
+	}
 
-	sprintf(log_str, "%s: %s", config.nickname, phrases[r_num]);
 	write_to_log(log_str, in_msg->middle);
 }
 
