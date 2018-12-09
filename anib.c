@@ -9,80 +9,36 @@
 #include <time.h>
 
 #define MAX_LEN 513
-
 #define CONF_COUNT 6
-#define CONF_ADDR 0
-#define CONF_PORT 1
-#define CONF_NICK 2
-#define CONF_USRNM 3
-#define CONF_RLNM 4
-#define CONF_CHNS 5
 
-#define COMPS_COUNT 6
-#define COMPS_PREF
-#define COMPS_CMD
-#define COMPS_PARS
-#define COMPS_NICK
-#define COMPS_MID
-#define COMPS_TRAIL
+static struct irc_conf {
+	char address[MAX_LEN];
+	char port[MAX_LEN];
+	char nickname[MAX_LEN];
+	char username[MAX_LEN];
+	char realname[MAX_LEN];
+	char channels[MAX_LEN];
+} config;
 
+struct irc_msg {
+	char prefix[MAX_LEN];
+	char command[MAX_LEN];
+	char params[MAX_LEN];
+	char nickname[MAX_LEN];
+	char middle[MAX_LEN];
+	char trailing[MAX_LEN];
+};
+
+static int sockfd;
 static char **phrases;
-static int line_count;
+static int ln_count = 1;
 
-static inline void get_phrases(void)
-{
-	FILE *phrases_file = fopen("phrases.txt", "r");
-	char buff;
-	int i = 0, max_line = 0, str_size;
-	char *line_buff;
-
-	line_count = 1;
-	while (1 == fread(&buff, 1, 1, phrases_file)) {
-		if (buff != '\n') {
-			++i;
-		} else {
-			max_line = (i > max_line) ? i : max_line;
-			i = 0;
-			++line_count;
-		}
-	}
-	fseek(phrases_file, 0, SEEK_SET);
-	if (i == 0) {
-		--line_count;
-	}
-
-	phrases = (char **) malloc(sizeof(char *) * line_count);
-	line_buff = (char *) malloc(sizeof(char) * (max_line + 2));
-
-	i = 0;
-	while (NULL != fgets(line_buff, max_line + 2, phrases_file)) {
-		str_size = strlen(line_buff);
-		if (line_buff[str_size - 1] == '\n') {
-			line_buff[--str_size] = '\0';
-		}
-
-		phrases[i] = (char *) malloc(sizeof(char) * (str_size + 1));
-		strcpy(phrases[i++], line_buff);
-	}
-
-	free(line_buff);
-	fclose(phrases_file);
-}
-
-static inline void time_machine(char out_trailing[MAX_LEN])
-{
-	int r_num = random() % line_count;
-
-	strcpy(out_trailing, phrases[r_num]);
-}
-
-static inline void write_to_log(char *log_str, char *log_name)
+static void write_to_log(char *log_str, char *log_name)
 {
 	/* Things to check the time */
 	char timestamp[MAX_LEN];
 	time_t timer = time(NULL);
 	struct tm *cur_time = localtime(&timer);
-	/* Where to log */
 	char log_filename[MAX_LEN];
 	FILE *log_file;
 
@@ -98,36 +54,74 @@ static inline void write_to_log(char *log_str, char *log_name)
 	fclose(log_file);
 }
 
-static inline void get_config(char config[CONF_COUNT][MAX_LEN])
+/* Sends string to server.
+   Maybe should be rewrited to use sctruct irc_msg */
+static void send_msg(char *msg)
 {
-	char cur_string[MAX_LEN];
-	char value[MAX_LEN];
-	int i = 0;
-	FILE *config_file;
+	char crlf_str[] = "\r\n";
 
-	if (NULL == (config_file = fopen("config.txt", "r"))) {
-		perror("Failed to read config.txt. get_config():fopen()");
+	memcpy(msg + strlen(msg), crlf_str, 3);
+	int status = send(sockfd, msg, strlen(msg), 0);
+
+	if (status < 0) {
+		perror("Failed to send message. send_msg(): send()");
 		exit(EXIT_FAILURE);
 	}
-
-	while (EOF != fscanf(config_file, "%[^ =] = %[^\n]", value, value)
-		   && i < 6) {
-		fgetc(config_file);
-		strcpy(config[i], value);
-		++i;
-	}
-
-	if (i < 6) {
-		fprintf(stderr, "Not enough options in config.txt. get_config()");
-		exit(EXIT_FAILURE);
-	}
-
-	fclose(config_file);
 }
 
-static inline void get_msg(int sockfd, char in_msg[COMPS_COUNT][MAX_LEN])
+static void some_magic(struct irc_msg *in_msg)
 {
-	char recvd_msg[MAX_LEN];
+	int r_num = random() % ln_count;
+	char msg[MAX_LEN], log_str[MAX_LEN];
+
+	sprintf(msg, "PRIVMSG %s :%s", in_msg->middle, phrases[r_num]);
+	send_msg(msg);
+
+	sprintf(log_str, "%s: %s", config.nickname, phrases[r_num]);
+	write_to_log(log_str, in_msg->middle);
+}
+
+static void parse_msg(char *recvd_str, struct irc_msg *in_msg)
+{
+	char buff_str[MAX_LEN];
+	char *token = strtok(recvd_str, " ");
+
+	memset(in_msg, 0, sizeof(*in_msg));
+
+	if (token[0] == ':') {
+		strcpy(in_msg->prefix, token + 1);
+		token = strtok(NULL, " ");
+	}
+
+	strcpy(in_msg->command, token);
+
+	token = strtok(NULL, "");
+	if (token != NULL)
+		strcpy(in_msg->params, token);
+
+	strcpy(buff_str, in_msg->prefix);
+	if (NULL != strchr(buff_str, '!')) {
+		strtok(buff_str, "!");
+	}
+	strcpy(in_msg->nickname, buff_str);
+
+	strcpy(buff_str, in_msg->params);
+	if (buff_str[0] == ':') {
+		strcpy(in_msg->trailing, buff_str + 1);
+	}
+	else {
+		if (NULL != (token = strstr(buff_str, " :"))) {
+			token[0] = 0;
+			token += 2;
+			strcpy(in_msg->trailing, token);
+		}
+		strcpy(in_msg->middle, buff_str);
+	}
+}
+
+static void get_msg(struct irc_msg *in_msg)
+{
+	char recvd_str[MAX_LEN];
 	char recvd_char;
 	int status, i = 0;
 
@@ -138,114 +132,103 @@ static inline void get_msg(int sockfd, char in_msg[COMPS_COUNT][MAX_LEN])
 		}
 
 		if (recvd_char == '\n') {
-			recvd_msg[i - 1] = '\0';
-			parse_msg(recvd_msg, in_msg);
+			recvd_str[i - 1] = '\0';
+			parse_msg(recvd_str, in_msg);
 			return;
 		}
 
-		recvd_msg[i] = recvd_char;
+		recvd_str[i] = recvd_char;
 		++i;
 	}
 
-	fprintf(stderr, "recvd_msg too long. exit() from get_msg\n");
+	fprintf(stderr, "recvd_str too long. exit() from get_msg()\n");
 	exit(EXIT_FAILURE);
 }
 
-static inline void parse_msg(char *recvd_msg, char in_msg[COMPS_COUNT][MAX_LEN])
+static void get_phrases()
 {
-	char *token = strtok(recvd_msg, " ");
+	char buff;
+	char buff_str[MAX_LEN];
+	int i = 0, len;
+	FILE *phrs_file;
 
-	if (token[0] == ':') {
-		strcpy(in_msg[COMPS_PREF], token + 1);
-		token = strtok(NULL, " ");
-	}
-
-	strcpy(in_msg[COMPS_CMD], token);
-
-	token = strtok(NULL, "");
-	if (token != NULL)
-		strcpy(in_msg[COMPS_PARS], token);
-
-	nickname = (NULL == strchr(in_msg[COMPS_PREF], '!'))? ""
-			   : (strtok(in_msg[COMPS_PREF], "!"));
-	if (NULL == (trailing = strchr(params, ':'))) {
-		trailing = "";
-		middle = params;
-	} else if (trailing == params) {
-		++trailing;
-		middle = "";
-	} else {
-		*(trailing - 1) = '\0';
-		++trailing;
-		middle = params;
-	}
-}
-
-static inline void send_out_msg(int sockfd, char *prefix, char *command,
-								char *params)
-{
-	int status;
-	char out_msg[MAX_LEN];
-
-	sprintf(out_msg, "%s %s %s\r\n", prefix, command, params);
-	status = send(sockfd, out_msg, strlen(out_msg), 0);
-
-	if (status < 0) {
-		perror("Failed to send message. send_out_msg():send()");
+	if (NULL == (phrs_file = fopen("phrases.txt", "r"))) {
+		perror("Failed to read phrases.txt. get_phrases(): fopen()");
 		exit(EXIT_FAILURE);
 	}
+
+	while (EOF != (buff = fgetc(phrs_file))) {
+		if (buff != '\n')
+			++i;
+		else {
+			if (i > MAX_LEN - 1) {
+				fprintf(stderr,
+						"Phrase %i is too long. exit() from get_phrases()\n",
+						ln_count);
+				exit(EXIT_FAILURE);
+			}
+			++ln_count;
+			i = 0;
+		}
+	}
+	if (i == 0)
+		--ln_count;
+
+	phrases = (char **)malloc(sizeof(char *) * ln_count);
+
+	i = 0;
+	fseek(phrs_file, 0, SEEK_SET);
+	while (NULL != fgets(buff_str, MAX_LEN, phrs_file)) {
+		strtok(buff_str, "\n");
+		phrases[i] = (char *)malloc(strlen(buff_str) + 1);
+		strcpy(phrases[i++], buff_str);
+	}
+
+	fclose(phrs_file);
 }
 
 /* Introduce our bot to the server and connect to channel(s) */
-static inline void irc_connect(int sockfd, char config[CONF_COUNT][MAX_LEN])
+static void irc_connect()
 {
-	char log_str[MAX_LEN], user_params[MAX_LEN];
+	char msg[MAX_LEN], log_str[MAX_LEN];
 
-	send_out_msg(sockfd, "", "NICK", config[CONF_NICK]);
-	sprintf(log_str, "Set nickname \"%s\"", config[CONF_NICK]);
+	sprintf(msg, "NICK %s", config.nickname);
+	send_msg(msg);
+	sprintf(log_str, "Set nickname to \"%s\"", config.nickname);
 	write_to_log(log_str, "bot");
 
-	sprintf(user_params, "%s 0 * :%s", config[CONF_USRNM], config[CONF_RLNM]);
-	send_out_msg(sockfd, "", "USER", user_params);
-	sprintf(log_str, "Set username \"%s\" and real name \"%s\"",
-			config[CONF_USRNM], config[CONF_RLNM]);
+	sprintf(msg, "USER %s 0 * :%s", config.username, config.realname);
+	send_msg(msg);
+	sprintf(log_str, "Set username to \"%s\" and real name to \"%s\"",
+			config.username, config.realname);
 	write_to_log(log_str, "bot");
 
-	send_out_msg(sockfd, "", "JOIN", config[CONF_CHNS]);
-	sprintf(log_str, "Join to channel(s) \"%s\"", config[CONF_CHNS]);
+	sprintf(msg, "JOIN %s", config.channels);
+	send_msg(msg);
+	sprintf(log_str, "Join to channel(s) \"%s\"", config.channels);
 	write_to_log(log_str, "bot");
 }
 
-int main(int argc, char *argv[])
-{
-	/* To connect to server */
+static void server_connect() {
 	struct addrinfo hints;
-	struct addrinfo *results;
-	struct addrinfo *res_i;
-	int sockfd;
+	struct addrinfo *results, *res_i;
 	int status;
-	/* Congig */
-	char config[CONF_COUNT][MAX_LEN];
-	/* Recieved message */
-	char in_msg[COMPS_COUNT][MAX_LEN];
-	/* Bot's functionality */
-	char out_msg[COMPS_COUNT][MAX_LEN];
 	char log_str[MAX_LEN];
 
 	/* hints is a template for sorting out connections */
-	memset(&hints, 0, sizeof(struct addrinfo));
+	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET; 	/* Allow IPv4 only */
 	hints.ai_socktype = SOCK_STREAM; 	/* TCP connection */
 	hints.ai_flags = 0;
 	hints.ai_protocol = 0; 	/* Any protocol */
 
-	get_config(config);
 	/* Get list of adresses corresponding to our hints template */
-	if (0 != (status = getaddrinfo(config[CONF_ADDR], config[CONF_PORT],
-								   &hints, &results))
-	) {
+	if (0 != (status = getaddrinfo(config.address, config.port,
+								   &hints, &results)))
+	{
 		fprintf(stderr,
-				"Failed to get address info. main():getaddrinfo(): %s\n",
+				"Failed to get address info."
+				"server_connect(): getaddrinfo(): %s\n",
 				gai_strerror(status));
 		exit(EXIT_FAILURE);
 	}
@@ -253,8 +236,8 @@ int main(int argc, char *argv[])
 	/* Try each address in results for connection. */
 	for (res_i = results;
 		 res_i != NULL;
-		 res_i = res_i->ai_next
-	) {
+		 res_i = res_i->ai_next)
+	{
 		sockfd = socket(res_i->ai_family,
 						res_i->ai_socktype,
 						res_i->ai_protocol);
@@ -266,46 +249,87 @@ int main(int argc, char *argv[])
 
 		close(sockfd);
 	}
-	freeaddrinfo(results);
+
 	/* Check if connected */
 	if (res_i == NULL) {
-		perror("Could not connect. main():connect()");
+		perror("Could not connect. main(): connect()");
 		exit(EXIT_FAILURE);
 	}
 
-	sprintf(log_str, "Connected to %s:%s", config[CONF_ADDR], config[CONF_PORT]);
+	sprintf(log_str, "Connected to %s:%s", config.address, config.port);
 	write_to_log(log_str, "bot");
 
-	irc_connect(sockfd, config);
+	freeaddrinfo(results);
+}
+
+static void get_config()
+{
+	char value[MAX_LEN];
+	char read_conf[CONF_COUNT][MAX_LEN];
+	int i = 0;
+	FILE *conf_file;
+
+	if (NULL == (conf_file = fopen("config.txt", "r"))) {
+		perror("Failed to read config.txt. get_config(): fopen()");
+		exit(EXIT_FAILURE);
+	}
+
+	/* Assume that config file structured right
+	   TODO: more precise check*/
+	while (EOF != fscanf(conf_file, "%[^ =] = %[^\n]", value, value)
+		   && i < CONF_COUNT)
+	{
+		strcpy(read_conf[i], value);
+		fgetc(conf_file);
+		++i;
+	}
+
+	/* I don't know how to do it with more fashion */
+	memset(&config, 0, sizeof(config));
+	strcpy(config.address, read_conf[0]);
+	strcpy(config.port, read_conf[1]);
+	strcpy(config.nickname, read_conf[2]);
+	strcpy(config.username, read_conf[3]);
+	strcpy(config.realname, read_conf[4]);
+	strcpy(config.channels, read_conf[5]);
+
+	fclose(conf_file);
+}
+
+int main(int argc, char **argv)
+{
+	struct irc_msg in_msg;
+	char msg[MAX_LEN], log_str[MAX_LEN];
+
+	get_config();
+	server_connect();
+	irc_connect();
 	get_phrases();
+	srandom(time(NULL));
 
-	while (1){
-		memset(in_msg, 0, sizeof(in_msg));
-		memset(out_msg, 0, sizeof(out_msg));
-		get_msg(sockfd, in_msg);
+	while (1) {
+		get_msg(&in_msg);
 
-		if (!strcmp(command, "PING")) {
-			send_out_msg(sockfd, "", "PONG", trailing);
-			sprintf(log_str, "Send PONG to \"%s\"", trailing);
+		if (!strcmp(in_msg.command, "PING")) {
+			sprintf(msg, "PONG %s", in_msg.trailing);
+			send_msg(msg);
+			sprintf(log_str, "Send PONG to \"%s\"", in_msg.trailing);
 			write_to_log(log_str, "bot");
-		} else if (!strcmp(command, "PRIVMSG")) {
-			sprintf(log_str, "%s: %s", nickname, trailing);
-			write_to_log(log_str, middle);
+		}
+		else if (!strcmp(in_msg.command, "PRIVMSG")) {
+			sprintf(log_str, "%s: %s", in_msg.nickname, in_msg.trailing);
+			write_to_log(log_str, in_msg.middle);
 
-			if (NULL != strstr(trailing, config[CONF_NICK])) {
-				time_machine(out_trailing);
-				sprintf(out_params, "%s :%s", middle, out_trailing);
-				send_out_msg(sockfd, "", "PRIVMSG", out_params);
-
-				sprintf(log_str, "%s: %s", config[CONF_NICK], out_trailing);
-				write_to_log(log_str, middle);
-			}
-		} else if (!strcmp(command, "JOIN")) {
-			sprintf(log_str, "%s joined channel", nickname);
-			write_to_log(log_str, middle);
-		} else if (!strcmp(command, "PART")) {
-			sprintf(log_str, "%s left channel", nickname);
-			write_to_log(log_str, middle);
+			if (NULL != strstr(in_msg.trailing, config.nickname))
+				some_magic(&in_msg);
+		}
+		else if (!strcmp(in_msg.command, "JOIN")) {
+			sprintf(log_str, "%s joined channel", in_msg.nickname);
+			write_to_log(log_str, in_msg.middle);
+		}
+		else if (!strcmp(in_msg.command, "PART")) {
+			sprintf(log_str, "%s left channel", in_msg.nickname);
+			write_to_log(log_str, in_msg.middle);
 		}
 	}
 }
