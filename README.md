@@ -1,2 +1,2 @@
-# anib
-ANIB (yet ANother IRC Bot)
+# ANIB
+yet ANother IRC Bot
